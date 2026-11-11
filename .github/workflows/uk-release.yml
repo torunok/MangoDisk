@@ -1,0 +1,140 @@
+name: Ukrainian build
+
+# Unofficial personal build: upstream release + the Ukrainian locale from upstream PR #80, published with its own
+# updater channel. Once upstream ships Ukrainian, this workflow can be deleted and the official build installed.
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Upstream tag (empty = latest release)
+        required: false
+      force:
+        description: Rebuild even if this release already exists
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: uk-release
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.decide.outputs.tag }}
+      build: ${{ steps.decide.outputs.build }}
+    steps:
+      # GitHub stops scheduled workflows after 60 days without repository activity.
+      - name: Keep the schedule enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow enable uk-release.yml -R "$GITHUB_REPOSITORY"
+
+      - name: Find the release to build
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_FORCE: ${{ inputs.force }}
+        run: |
+          tag="$INPUT_TAG"
+          [ -n "$tag" ] || tag=$(gh api repos/harry0703/MangoDisk/releases/latest --jq .tag_name)
+          build=true
+          if gh release view "$tag-uk" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && [ "$INPUT_FORCE" != true ]; then
+            build=false
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: windows-latest
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: uk
+          fetch-depth: 0
+
+      # A merge conflict fails the run, so a broken combination is never published.
+      - name: Merge the upstream release
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/harry0703/MangoDisk.git
+          git fetch --no-tags upstream "+refs/tags/${env:TAG}:refs/tags/${env:TAG}"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch the upstream tag' }
+          git merge --no-edit $env:TAG
+          if ($LASTEXITCODE -ne 0) { throw 'The Ukrainian branch conflicts with this upstream release' }
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Create the throwaway helper certificate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=MangoDisk Ukrainian build' -CertStoreLocation Cert:\CurrentUser\My
+          $file = Join-Path $env:RUNNER_TEMP 'helper.cer'
+          Export-Certificate -Cert $cert -FilePath $file | Out-Null
+          Import-Certificate -FilePath $file -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+          Import-Certificate -FilePath $file -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null
+          $command = @('pwsh', '-NoProfile', '-File', "$env:GITHUB_WORKSPACE\uk\sign-helper.ps1", '{file}') | ConvertTo-Json -Compress
+          "MANGODISK_PRIVILEGED_SIGN_COMMAND=$command" >> $env:GITHUB_ENV
+
+      - name: Build the installer
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          pnpm tauri build --bundles nsis --config "$env:GITHUB_WORKSPACE\uk\tauri.uk.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+
+      - name: Publish the release and update manifest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-ChildItem dist -Recurse -Filter '*uk-ua*')) { throw 'The Ukrainian locale is missing from the build' }
+          $exe = Get-ChildItem target, src-tauri\target -Recurse -Filter '*-setup.exe' -ErrorAction SilentlyContinue |
+              Where-Object DirectoryName -match 'bundle\\nsis' | Select-Object -First 1
+          if (-not $exe) { throw 'Installer not found' }
+          $version = (Get-Content src-tauri\tauri.conf.json -Raw | ConvertFrom-Json).version
+          $release = "$env:TAG-uk"
+          $manifest = @{
+            version = $version
+            notes = "MangoDisk $version"
+            pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            platforms = @{
+              'windows-x86_64' = @{
+                signature = (Get-Content "$($exe.FullName).sig" -Raw).Trim()
+                url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$release/$($exe.Name)"
+              }
+            }
+          } | ConvertTo-Json -Depth 4
+          [IO.File]::WriteAllText("$PWD\latest.json", $manifest)
+          $missing = node uk/untranslated.mjs
+          $notes = "Unofficial Ukrainian build of MangoDisk $version (upstream PR #80). Strings still in English: $missing."
+          gh release view $release *> $null
+          if ($LASTEXITCODE -eq 0) { gh release delete $release --yes --cleanup-tag }
+          $global:LASTEXITCODE = 0
+          gh release create $release $exe.FullName latest.json --target uk --latest --title "MangoDisk $version (українська)" --notes $notes
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish the release' }
