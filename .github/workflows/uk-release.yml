@@ -97,6 +97,10 @@ jobs:
           Import-Certificate -FilePath $file -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null
           $command = @('pwsh', '-NoProfile', '-File', "$env:GITHUB_WORKSPACE\uk\sign-helper.ps1", '{file}') | ConvertTo-Json -Compress
           "MANGODISK_PRIVILEGED_SIGN_COMMAND=$command" >> $env:GITHUB_ENV
+          # Since 1.2.3 the release build also requires a signed Explorer integration package.
+          $explorer = @('pwsh', '-NoProfile', '-File', "$env:GITHUB_WORKSPACE\uk\sign-explorer.ps1", '{file}') | ConvertTo-Json -Compress
+          "MANGODISK_EXPLORER_SIGN_COMMAND=$explorer" >> $env:GITHUB_ENV
+          "MANGODISK_EXPLORER_PUBLISHER=CN=MangoDisk Ukrainian build" >> $env:GITHUB_ENV
 
       - name: Build the installer
         shell: pwsh
