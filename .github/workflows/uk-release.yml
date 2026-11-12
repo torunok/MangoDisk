@@ -116,6 +116,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The merge step added an 'upstream' remote; without -R gh would target harry0703/MangoDisk.
           $ErrorActionPreference = 'Stop'
           if (-not (Get-ChildItem dist -Recurse -Filter '*uk-ua*')) { throw 'The Ukrainian locale is missing from the build' }
           $exe = Get-ChildItem target, src-tauri\target -Recurse -Filter '*-setup.exe' -ErrorAction SilentlyContinue |
@@ -137,8 +138,8 @@ jobs:
           [IO.File]::WriteAllText("$PWD\latest.json", $manifest)
           $missing = node uk/untranslated.mjs
           $notes = "Unofficial Ukrainian build of MangoDisk $version (upstream PR #80). Strings still in English: $missing."
-          gh release view $release *> $null
-          if ($LASTEXITCODE -eq 0) { gh release delete $release --yes --cleanup-tag }
+          gh release view $release -R $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { gh release delete $release -R $env:GITHUB_REPOSITORY --yes --cleanup-tag }
           $global:LASTEXITCODE = 0
-          gh release create $release $exe.FullName latest.json --target uk --latest --title "MangoDisk $version (українська)" --notes $notes
+          gh release create $release $exe.FullName latest.json -R $env:GITHUB_REPOSITORY --target uk --latest --title "MangoDisk $version (українська)" --notes $notes
           if ($LASTEXITCODE -ne 0) { throw 'Could not publish the release' }
