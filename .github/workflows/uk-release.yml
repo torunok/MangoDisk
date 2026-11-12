@@ -108,6 +108,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          # Upstream may tag a release without bumping the version files (v1.2.3 still says 1.2.2), so take it from the tag.
+          $version = $env:TAG.TrimStart('v')
+          $conf = Get-Content src-tauri\tauri.conf.json -Raw | ConvertFrom-Json
+          $conf.version = $version
+          [IO.File]::WriteAllText("$PWD\src-tauri\tauri.conf.json", ($conf | ConvertTo-Json -Depth 32))
           pnpm tauri build --bundles nsis --config "$env:GITHUB_WORKSPACE\uk\tauri.uk.json"
           if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 
